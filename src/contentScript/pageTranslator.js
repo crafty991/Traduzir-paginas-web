@@ -586,9 +586,10 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
             node.classList.contains("material-symbols-outlined") ||
             nodeName.startsWith("br-") || // https://github.com/FilipePS/Traduzir-paginas-web/issues/627
             node.getAttribute("id") === "branch-select-menu" || // https://github.com/FilipePS/Traduzir-paginas-web/issues/570
-            (location.hostname === "twitter.com" &&
+            (/(^|\.)(x|twitter)\.com$/.test(location.hostname) &&
               nodeName === "a" &&
-              (node.matches ? node.matches("article a") : true)) // https://github.com/FilipePS/Traduzir-paginas-web/issues/449
+              (node.closest('[data-testid="tweetText"]') ||
+                (node.matches ? node.matches("article a") : true))) // https://github.com/FilipePS/Traduzir-paginas-web/issues/449
           ) {
             if (piecesToTranslate[index].nodes.length > 0) {
               currentParagraphSize = 0;
