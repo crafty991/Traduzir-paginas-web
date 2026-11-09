@@ -396,6 +396,8 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
     twpConfig.get("dontSortResults") == "yes" ? true : false;
 
   let fooCount = 0;
+  let manuallyRestored = false;
+  let retryInitialLanguageDetection = () => {};
 
   let originalPageTitle;
 
@@ -487,6 +489,48 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
   }
 
   let pageIsVisible = document.visibilityState == "visible";
+
+  // The observer is deliberately paused in hidden tabs. Recover content
+  // created during that pause once, when the user returns, without changing
+  // the normal two-second collection interval.
+  function recoverContentAfterTabReturn() {
+    const restoredNodes = new Map(nodesToRestore.map((info) => [info.node, info]));
+    const knownNodes = new Set();
+    function remember(node) {
+      knownNodes.add(node);
+      // Hover-original mode replaces a Text node with a font element. Its
+      // children must count as translated too when rescanning the document.
+      if (node.nodeType === 1) {
+        const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) knownNodes.add(walker.currentNode);
+      }
+    }
+    piecesToTranslate.forEach((piece) => {
+      if (piece.obsolete) return;
+      if (piece.pendingSource) {
+        if (!piece.pendingSource.every(({ node, text }) => node.isConnected && node.textContent === text)) {
+          piece.obsolete = true;
+          return;
+        }
+        piece.nodes.forEach(remember);
+        return;
+      }
+      piece.nodes.forEach((node) => {
+        if (!node.isConnected) return;
+        const previous = restoredNodes.get(node);
+        if ((!piece.isTranslated && !previous) ||
+            (previous && node.textContent === previous.translatedText)) remember(node);
+      });
+    });
+    for (const piece of getPiecesToTranslate(document.body)) {
+      piece.nodes = piece.nodes.filter((node) => !knownNodes.has(node));
+      if (piece.nodes.length) {
+        piecesToTranslate.push(piece);
+        piece.nodes.forEach(remember);
+      }
+    }
+    translationRoutine();
+  }
   // isto faz com que partes do youtube não sejam traduzidas
   // new IntersectionObserver(entries => {
   //         if (entries[0].isIntersecting && document.visibilityState == "visible") {
@@ -506,6 +550,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
   //     .observe(document.body)
 
   const handleVisibilityChange = function () {
+    const wasVisible = pageIsVisible;
     if (document.visibilityState == "visible") {
       pageIsVisible = true;
     } else {
@@ -514,8 +559,21 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
 
     if (pageIsVisible && pageLanguageState === "translated") {
       enableMutatinObserver();
+      if (!wasVisible) {
+        if (twpConfig.get("translateDynamicallyCreatedContent") === "yes") {
+          recoverContentAfterTabReturn();
+        } else {
+          translationRoutine();
+        }
+      }
     } else {
       disableMutatinObserver();
+      if (pageIsVisible && !wasVisible && alreadyGotTheLanguage &&
+          originalTabLanguage === "und" && !manuallyRestored &&
+          (twpConfig.get("alwaysTranslateLangs").length ||
+           twpConfig.get("alwaysTranslateSites").includes(tabHostName))) {
+        retryInitialLanguageDetection();
+      }
     }
   };
   document.addEventListener("visibilitychange", handleVisibilityChange, false);
@@ -1014,12 +1072,13 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
 
           const piecesToTranslateNow = [];
           piecesToTranslate.forEach((ptt) => {
-            if (!ptt.isTranslated) {
+            if (!ptt.isTranslated && !ptt.obsolete) {
               if (
                 bottomIsInScreen(ptt.topElement) ||
                 topIsInScreen(ptt.bottomElement)
               ) {
                 ptt.isTranslated = true;
+                ptt.pendingSource = ptt.nodes.map((node) => ({ node, text: node.textContent }));
                 piecesToTranslateNow.push(ptt);
               }
             }
@@ -1055,7 +1114,22 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
                 pageLanguageState === "translated" &&
                 currentFooCount === fooCount
               ) {
-                translateResults(piecesToTranslateNow, results);
+                const validPieces = [];
+                const validResults = [];
+                piecesToTranslateNow.forEach((piece, i) => {
+                  const unchanged = !piece.obsolete && piece.pendingSource &&
+                    piece.pendingSource.every(({ node, text }) => node.isConnected && node.textContent === text);
+                  piece.pendingSource = null;
+                  if (unchanged && Array.isArray(results) && Array.isArray(results[i])) {
+                    validPieces.push(piece);
+                    validResults.push(results[i]);
+                  } else {
+                    // Do not overwrite a newer React/SPA version with an old
+                    // response. A return-to-tab rescan can collect it afresh.
+                    piece.obsolete = true;
+                  }
+                });
+                translateResults(validPieces, validResults);
               }
             });
           }
@@ -1120,8 +1194,9 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
   var translationRoutine_handler = null;
 
   pageTranslator.translatePage = function (targetLanguage) {
+    manuallyRestored = false;
     fooCount++;
-    pageTranslator.restorePage();
+    pageTranslator.restorePage(true);
     showOriginal.enable();
     chrome.runtime.sendMessage(
       { action: "removeTranslationsWithError" },
@@ -1201,7 +1276,8 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
     translationRoutine();
   };
 
-  pageTranslator.restorePage = function () {
+  pageTranslator.restorePage = function (internal = false) {
+    if (!internal) manuallyRestored = true;
     fooCount++;
     twitterTranslator.restore();
     piecesToTranslate = [];
@@ -1369,15 +1445,28 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
   // Requests the detection of the tab language in the background
   if (window.self === window.top) {
     // is main frame
+    let detectionInProgress = false;
+    let detectionAttempts = 0;
     const onTabVisible = function () {
+      if (detectionInProgress || detectionAttempts >= 3 || manuallyRestored ||
+          (alreadyGotTheLanguage && originalTabLanguage !== "und")) return;
+      detectionInProgress = true;
+      detectionAttempts++;
       chrome.runtime.sendMessage(
         {
           action: "detectTabLanguage",
         },
         (result) => {
+          detectionInProgress = false;
           checkedLastError();
 
           result = result || "und";
+          if (manuallyRestored) {
+            originalTabLanguage = twpLang.fixTLanguageCode(result) || "und";
+            observers.forEach((callback) => callback(originalTabLanguage));
+            alreadyGotTheLanguage = true;
+            return;
+          }
           if (result === "und") {
             originalTabLanguage = result;
             if (
@@ -1453,6 +1542,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
         }
       );
     };
+    retryInitialLanguageDetection = onTabVisible;
     setTimeout(function () {
       if (document.visibilityState == "visible") {
         onTabVisible();
