@@ -441,6 +441,8 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
     const piecesToTranslate = [];
 
     mutations.forEach((mutation) => {
+      // X posts have a dedicated observer which also handles reused text nodes.
+      if (twitterTranslator.getPost(mutation.target)) return;
       mutation.addedNodes.forEach((addedNode) => {
         const nodeName = addedNode.nodeName.toLowerCase();
         if (!isNoTranslateNode(addedNode)) {
@@ -546,7 +548,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
     }
   }
 
-  function getPiecesToTranslate(root = document.documentElement) {
+  function getPiecesToTranslate(root = document.documentElement, includeTwitterPost = false) {
     const piecesToTranslate = [
       {
         isTranslated: false,
@@ -576,6 +578,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
             lastSelectOrDataListElement = node;
 
           if (
+            (!includeTwitterPost && twitterTranslator.getPost(node) === node) ||
             htmlTagsInlineIgnore.indexOf(nodeName) !== -1 ||
             isNoTranslateNode(node) ||
             node.classList.contains("notranslate") ||
@@ -1164,11 +1167,43 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
 
     enableMutatinObserver();
 
+    const translationGeneration = fooCount;
+    twitterTranslator.start({
+      dynamic: twpConfig.get("translateDynamicallyCreatedContent") === "yes",
+      getPieces(post) {
+        if (post.closest('.notranslate, [translate="no"], [contenteditable="true"]')) return [];
+        return getPiecesToTranslate(post, true);
+      },
+      async translate(sources) {
+        const service = currentPageTranslatorService;
+        const sourceLanguage = currentSourceLanguage;
+        const targetLanguage = currentTargetLanguage;
+        const dictionary = customDictionary;
+        const unsorted = dontSortResults;
+        const results = await backgroundTranslateHTML(
+          service, sourceLanguage, targetLanguage,
+          sources.map((piece) => piece.map((text) =>
+            filterKeywordsInText(text, dictionary, service)
+          )), unsorted
+        );
+        if (translationGeneration !== fooCount || !Array.isArray(results)) return [];
+        return Promise.all(sources.map((piece, i) => Promise.all(piece.map((text, j) => {
+          let translated = results[i] && results[i][j];
+          if (typeof translated !== "string") return null;
+          if (unsorted && j === piece.length - 1 && results[i].length > piece.length) {
+            translated += " " + results[i].slice(j + 1).join(" ");
+          }
+          return handleCustomWords(translated, text, dictionary, service, sourceLanguage, targetLanguage);
+        }))));
+      },
+    });
+
     translationRoutine();
   };
 
   pageTranslator.restorePage = function () {
     fooCount++;
+    twitterTranslator.restore();
     piecesToTranslate = [];
 
     showOriginal.disable();

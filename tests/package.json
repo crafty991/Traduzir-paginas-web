@@ -1,0 +1,11 @@
+{
+  "name": "twp-content-script-regressions",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node x-regression.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}
