@@ -246,7 +246,8 @@ function backgroundTranslateHTML(
   sourceLanguage,
   targetLanguage,
   sourceArray2d,
-  dontSortResults
+  dontSortResults,
+  retryFailedTranslation = false
 ) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(
@@ -257,6 +258,7 @@ function backgroundTranslateHTML(
         targetLanguage,
         sourceArray2d,
         dontSortResults,
+        retryFailedTranslation,
       },
       (response) => {
         checkedLastError();
@@ -1244,12 +1246,13 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
 
     const translationGeneration = fooCount;
     twitterTranslator.start({
+      retryFailed: currentPageTranslatorService === "google",
       dynamic: twpConfig.get("translateDynamicallyCreatedContent") === "yes",
       getPieces(post) {
         if (post.closest('.notranslate, [translate="no"], [contenteditable="true"]')) return [];
         return getPiecesToTranslate(post, true);
       },
-      async translate(sources) {
+      async translate(sources, retryFailedTranslation = false) {
         const service = currentPageTranslatorService;
         const sourceLanguage = currentSourceLanguage;
         const targetLanguage = currentTargetLanguage;
@@ -1259,7 +1262,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
           service, sourceLanguage, targetLanguage,
           sources.map((piece) => piece.map((text) =>
             filterKeywordsInText(text, dictionary, service)
-          )), unsorted
+          )), unsorted, retryFailedTranslation
         );
         if (translationGeneration !== fooCount || !Array.isArray(results)) return [];
         return Promise.all(sources.map((piece, i) => Promise.all(piece.map((text, j) => {

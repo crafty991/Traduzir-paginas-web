@@ -550,7 +550,7 @@ const translationService = (function () {
      * @param {Array<string[]>} sourceArray2d
      * @returns {Promise<[Array<TranslationInfo[]>, TranslationInfo[]]>} `requests`, `currentTranslationsInProgress`
      */
-    async getRequests(sourceLanguage, targetLanguage, sourceArray2d) {
+    async getRequests(sourceLanguage, targetLanguage, sourceArray2d, refresh = false) {
       /** @type {Array<TranslationInfo[]>} */
       const requests = [];
       /** @type {TranslationInfo[]} */
@@ -570,7 +570,9 @@ const translationService = (function () {
         ].join(", ");
 
         const progressInfo = this.translationsInProgress.get(requestHash);
-        if (progressInfo) {
+        // A bounded recovery must not replay a failed/incomplete cached result.
+        // Keep sharing requests that are still in progress.
+        if (progressInfo && (!refresh || progressInfo.status === "translating")) {
           currentTranslationsInProgress.push(progressInfo);
         } else {
           /** @type {TranslationStatus} */
@@ -597,7 +599,7 @@ const translationService = (function () {
           this.translationsInProgress.set(requestHash, progressInfo);
 
           //cast
-          const cacheEntry = await translationCache.get(
+          const cacheEntry = refresh ? null : await translationCache.get(
             this.serviceName,
             sourceLanguage,
             targetLanguage,
@@ -699,11 +701,13 @@ const translationService = (function () {
       sourceArray2d,
       dontSaveInPersistentCache = false,
       dontSortResults = false,
+      retryFailedTranslation = false,
     ) {
       const [requests, currentTranslationsInProgress] = await this.getRequests(
         sourceLanguage,
         targetLanguage,
         sourceArray2d,
+        retryFailedTranslation,
       );
       /** @type {Promise<void>[]} */
       const promises = [];
@@ -998,6 +1002,7 @@ const translationService = (function () {
       sourceArray2d,
       dontSaveInPersistentCache,
       dontSortResults = false,
+      retryFailedTranslation = false,
     ) {
       /** @type {{search: string, replace: string}[]} */
       const replacements = [
@@ -1028,6 +1033,7 @@ const translationService = (function () {
         sourceArray2d,
         dontSaveInPersistentCache,
         dontSortResults,
+        retryFailedTranslation,
       );
     }
   })();
@@ -1579,6 +1585,7 @@ const translationService = (function () {
     sourceArray2d,
     dontSaveInPersistentCache = false,
     dontSortResults = false,
+    retryFailedTranslation = false,
   ) => {
     serviceName = twpLang.getAlternativeService(
       targetLanguage,
@@ -1592,6 +1599,7 @@ const translationService = (function () {
       sourceArray2d,
       dontSaveInPersistentCache,
       dontSortResults,
+      retryFailedTranslation,
     );
   };
 
@@ -1659,6 +1667,7 @@ const translationService = (function () {
           request.sourceArray2d,
           dontSaveInPersistentCache,
           request.dontSortResults,
+          request.retryFailedTranslation === true,
         )
         .then((results) => sendResponse(results))
         .catch((e) => {

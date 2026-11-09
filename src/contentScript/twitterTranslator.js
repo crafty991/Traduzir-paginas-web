@@ -40,6 +40,8 @@ var twitterTranslator = (function () {
     posts.set(post, {
       revision: previous ? previous.revision + 1 : 1,
       snapshot: snapshot(post),
+      attempts: 0,
+      retryAt: 0,
     });
     dirty.add(post);
   }
@@ -85,31 +87,53 @@ var twitterTranslator = (function () {
     stop();
     if (!isTwitter) return;
     const currentGeneration = generation;
+    let retriesInFlight = 0;
 
     async function translate(post, state) {
       const pieces = options.getPieces(post).map((piece) => piece.nodes);
       if (!pieces.length) return;
       const sources = pieces.map((nodes) => nodes.map(sourceFor));
+      const retrying = state.attempts > 0;
+      if (retrying) retriesInFlight++;
+      state.attempts++;
+      function isCurrent() {
+        return currentGeneration === generation && post.isConnected &&
+          posts.get(post) === state && matches(post, state.snapshot);
+      }
+      function retry() {
+        // Reuse the existing visibility/viewport loop; no extra polling timer.
+        // Each text revision gets at most two additional Google attempts.
+        if (!options.retryFailed || state.attempts >= 3 || !isCurrent()) return;
+        state.retryAt = Date.now() + (state.attempts === 1 ? 1500 : 4000);
+        dirty.add(post);
+      }
       try {
-        const results = await options.translate(sources);
-        if (currentGeneration !== generation || !post.isConnected ||
-            posts.get(post) !== state || !matches(post, state.snapshot)) return;
+        const results = await options.translate(sources, state.attempts > 1);
+        if (!isCurrent()) return;
 
         // Resolve all results before writing so our observer sees one complete
         // snapshot, and cannot mistake our own changes for a React update.
+        let incomplete = false;
         pieces.forEach((nodes, i) => nodes.forEach((node, j) => {
           const text = results && results[i] && results[i][j];
-          if (typeof text !== "string" || !text) return;
+          if (typeof text !== "string" || !text.trim()) {
+            incomplete = true;
+            return;
+          }
           const translated = text + " ";
           translations.set(node, { original: sources[i][j], translated });
-          node.data = translated;
+          if (node.data !== translated) node.data = translated;
         }));
         state.snapshot = snapshot(post);
+        if (incomplete) retry();
         if (showOriginal.isEnabled) {
           showOriginal.add(post, state.snapshot.map(({ node }) => sourceFor(node)).join(""));
         }
       } catch (error) {
+        retry();
         console.error("TWP: could not translate an X post", error);
+      } finally {
+        if (retrying) retriesInFlight--;
       }
     }
 
@@ -121,13 +145,16 @@ var twitterTranslator = (function () {
           dirty.delete(post);
         }
       });
+      const now = Date.now();
       dirty.forEach((post) => {
+        const state = posts.get(post);
+        if (state.retryAt > now || (state.attempts > 0 && retriesInFlight >= 2)) return;
         const rect = post.getBoundingClientRect();
         // Include posts taller than the viewport, common after Show more.
         if (rect.height <= 0 || rect.width <= 0 || rect.bottom <= 0 ||
             rect.top >= window.innerHeight) return;
         dirty.delete(post);
-        translate(post, posts.get(post));
+        translate(post, state);
       });
     }
 
