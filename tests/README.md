@@ -56,3 +56,40 @@ The check is conservative, not proof that every unchanged result is invalid.
 It does not detect English paraphrases or entries with unknown source language.
 Clearing a live cache removed the evidence needed to establish the exact cause
 of that incident; controlled regressions cover the specific class above.
+
+
+## Visible identities and translatable publication times
+
+`identity-regression.cjs` exercises the production scripts in Chromium with
+controlled translation responses. It covers Reddit community/user root links,
+X User-Name/UserName/UserCell fields and post links, explicit rel=author and
+schema.org author/creator name fields, standalone handles and visible addresses.
+The selector checks follow open shadow-root hosts and also run when collecting
+inserted text or applying a pending translation.
+
+Written-out publication times remain translatable, including time/faceplate-timeago
+contents, X status links and ordinary "2 hours ago" labels. Whole compact labels
+such as "1h" and "1 min" are kept verbatim, including dynamically inserted labels
+and open shadow roots. A compact unit inside ordinary prose does not exclude the
+whole sentence. Article titles,
+bios, buttons, ordinary link labels and unmarked prose remain translatable.
+The pre-existing workaround for links inside X tweetText is preserved.
+
+On Reddit, standalone numeric labels (including vote/comment counts such as
+"23K", "1,8K", "1.8K" and "0") retain their original formatting. Split digits
+and suffixes in faceplate-number are also protected, through open shadow roots.
+Adjacent action labels still translate, and live counter changes are left to
+the site. Numbers embedded in prose and standalone counts on other sites keep
+their existing translation behavior. Tests use a controlled provider that
+expands "23K" and "1,8K" to reproduce the reported unwanted reformatting.
+
+These are conservative DOM rules, not general person-name recognition.
+Unmarked names, novel site layouts, arbitrary bare domains without a link or
+scheme, private shadow roots, and identifiers embedded in a mixed prose Text
+node are not guaranteed to be protected. Tooltips/other attribute text are not
+covered by the new visible-text rules. No timers, observers, network API calls,
+permissions or provider changes are added.
+
+Set TWP_SOURCE_ROOT to choose another source tree when reproducing an older
+version's behavior with this fixture. This is functional validation, not a
+benchmark or an installed-extension/live-provider test.

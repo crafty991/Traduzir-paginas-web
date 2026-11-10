@@ -610,6 +610,93 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
     }
   }
 
+  const protectRedditNames = /(^|\.)reddit\.com$/.test(location.hostname);
+  const protectXNames = twitterTranslator.isTwitter;
+
+  // Follow explicit metadata through open shadow roots, without observers or
+  // whole-page name guessing. This also works when collection starts at a
+  // dynamically inserted Text node rather than its metadata container.
+  function closestIdentityElement(element, selector) {
+    while (element) {
+      const match = element.closest(selector);
+      if (match) return match;
+      element = element.getRootNode().host || null;
+    }
+    return null;
+  }
+
+  function isAddressText(text) {
+    return /^(?:https?:\/\/|www\.)[^\s<>]+$/i.test(text) ||
+      /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(text);
+  }
+
+  function isNumericCounterText(text) {
+    return /^[+\-−]?\d+(?:[.,\u00a0\u202f ]\d+)*(?:\s*[kmb])?$/i.test(text);
+  }
+
+  function isProtectedIdentityText(node) {
+    const element = node.nodeType === 1 ? node : (node.parentElement || node.getRootNode().host);
+    const text = (node.textContent || "").trim();
+    if (!element || !text) return false;
+    // Preserve Reddit's standalone numeric labels, including UI counters.
+    // Keep their precision, separators and K/M/B suffixes exactly as rendered.
+    // Whole-node matching leaves prose and adjacent button labels translatable.
+    if (protectRedditNames) {
+      if (isNumericCounterText(text)) return true;
+      const counter = closestIdentityElement(element, "faceplate-number");
+      if (counter && isNumericCounterText(counter.textContent.trim())) return true;
+    }
+    // Keep compact time labels verbatim; only complete labels are translated.
+    // Match the whole Text node so a duration inside prose never excludes it.
+    if (/^\d+(?:[.,]\d+)?\s*(?:s|sec|secs|min|mins|m|h|hr|hrs|d|w|wk|wks|mo|mos|y|yr|yrs)\.?$/i.test(text)) return true;
+    // Written-out time labels remain translatable, even beside an author's name.
+    if (closestIdentityElement(element, "time, faceplate-timeago")) return false;
+    // Some author widgets put the relative time in an ordinary inline span.
+    if (/\b\d+(?:\.\d+)?\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s+ago\b/i.test(text)) return false;
+    if (isAddressText(text) || /^@[\p{L}\p{N}_][\p{L}\p{N}_.@-]*$/u.test(text)) return true;
+
+    const name = closestIdentityElement(element, '[itemprop~="name"]');
+    if (name) {
+      const owner = closestIdentityElement(name, "[itemscope]");
+      if (closestIdentityElement(name, '[itemprop~="author"], [itemprop~="creator"]') ||
+          owner?.matches('[itemtype~="https://schema.org/Person"], [itemtype~="http://schema.org/Person"], [itemtype~="https://schema.org/Organization"], [itemtype~="http://schema.org/Organization"]')) return true;
+    }
+    const author = closestIdentityElement(element, 'a[rel~="author"], [itemprop~="author"], [itemprop~="creator"]');
+    if (author && !author.querySelector('[itemprop~="name"], p, article, section, time, button, [itemprop~="description"]') &&
+        Math.max(author.textContent.trim().length, text.length) <= 100) return true;
+
+    if (protectXNames && closestIdentityElement(element, '[data-testid="UserName"]')) return true;
+    const anchor = closestIdentityElement(element, "a[href]");
+    if (!anchor) return false;
+    if (isAddressText(anchor.textContent.trim())) return true;
+    let url;
+    try { url = new URL(anchor.getAttribute("href"), anchor.baseURI); }
+    catch (_) { return false; }
+    if (!/^https?:$/.test(url.protocol)) return false;
+    const label = anchor.textContent.trim();
+    const address = url.host + url.pathname + url.search + url.hash;
+    if (label.replace(/\/$/, "") === address.replace(/\/$/, "")) return true;
+
+    if (protectRedditNames && /(^|\.)reddit\.com$/.test(url.hostname)) {
+      const path = url.pathname.match(/^\/(r|u|user)\/([A-Za-z0-9_-]+)\/?$/i);
+      if (path) {
+        const prefix = path[1].toLowerCase() === "r" ? "r" : "u";
+        const value = text.toLowerCase();
+        const full = label.toLowerCase();
+        const user = path[2].toLowerCase();
+        return value === user || value === prefix + "/" || value === prefix + "/" + user ||
+          value === "user/" + user || full === prefix + "/" + user || full === user;
+      }
+    }
+    if (protectXNames && /(^|\.)(x|twitter)\.com$/.test(url.hostname)) {
+      const profile = url.pathname.match(/^\/([A-Za-z0-9_]{1,15})\/?$/);
+      if (profile && closestIdentityElement(anchor, '[data-testid="User-Name"], [data-testid="UserCell"]') && label.length <= 100) return true;
+    }
+    // Preserve the existing X post-link workaround, while allowing timestamps
+    // and ordinary link labels outside post text to be translated.
+    return protectXNames && !!closestIdentityElement(anchor, '[data-testid="tweetText"]');
+  }
+
   function getPiecesToTranslate(root = document.documentElement, includeTwitterPost = false) {
     const piecesToTranslate = [
       {
@@ -650,11 +737,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
             node.classList.contains("material-icons") || // https://github.com/FilipePS/Traduzir-paginas-web/issues/481
             node.classList.contains("material-symbols-outlined") ||
             nodeName.startsWith("br-") || // https://github.com/FilipePS/Traduzir-paginas-web/issues/627
-            node.getAttribute("id") === "branch-select-menu" || // https://github.com/FilipePS/Traduzir-paginas-web/issues/570
-            (/(^|\.)(x|twitter)\.com$/.test(location.hostname) &&
-              nodeName === "a" &&
-              (node.closest('[data-testid="tweetText"]') ||
-                (node.matches ? node.matches("article a") : true))) // https://github.com/FilipePS/Traduzir-paginas-web/issues/449
+            node.getAttribute("id") === "branch-select-menu" // https://github.com/FilipePS/Traduzir-paginas-web/issues/570
           ) {
             if (piecesToTranslate[index].nodes.length > 0) {
               currentParagraphSize = 0;
@@ -727,6 +810,16 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
           }
         }
       } else if (node.nodeType == 3) {
+        if (isProtectedIdentityText(node)) {
+          if (piecesToTranslate[index].nodes.length) {
+            currentParagraphSize = 0;
+            piecesToTranslate[index].bottomElement = node.parentElement;
+            piecesToTranslate.push({ isTranslated: false, parentElement: null,
+              topElement: null, bottomElement: null, nodes: [] });
+            index++;
+          }
+          return;
+        }
         if (node.textContent.trim().length > 0) {
           if (!piecesToTranslate[index].parentElement) {
             if (
@@ -933,6 +1026,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
         for (let j = 0; j < results[i].length; j++) {
           if (piecesToTranslateNow[i].nodes[j]) {
             const nodes = piecesToTranslateNow[i].nodes;
+            if (isProtectedIdentityText(nodes[j])) continue;
             let translated = results[i][j] + " ";
             // In some case, results items count is over original node count
             // Rest results append to last node
@@ -973,7 +1067,9 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
               // results = `${originalText.match(/^\s*/)[0]}${results.trim()}${
               //   originalText.match(/\s*$/)[0]
               // }`;
-              translateTextContent(nodes[j], parentNode, results, toRestore);
+              if (!isProtectedIdentityText(nodes[j])) {
+                translateTextContent(nodes[j], parentNode, results, toRestore);
+              }
             });
           }
         }
@@ -983,6 +1079,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
         for (const j in piecesToTranslateNow[i].nodes) {
           if (results[i][j]) {
             const nodes = piecesToTranslateNow[i].nodes;
+            if (isProtectedIdentityText(nodes[j])) continue;
             const translated = results[i][j] + " ";
 
             const originalTextNode = nodes[j];
@@ -1013,7 +1110,9 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
               // results = `${originalText.match(/^\s*/)[0]}${results.trim()}${
               //   originalText.match(/\s*$/)[0]
               // }`;
-              translateTextContent(nodes[j], parentNode, results, toRestore);
+              if (!isProtectedIdentityText(nodes[j])) {
+                translateTextContent(nodes[j], parentNode, results, toRestore);
+              }
             });
           }
         }
@@ -1248,6 +1347,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
 
     const translationGeneration = fooCount;
     twitterTranslator.start({
+      isProtected: isProtectedIdentityText,
       retryFailed: currentPageTranslatorService === "google",
       dynamic: twpConfig.get("translateDynamicallyCreatedContent") === "yes",
       getPieces(post) {

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "test": "node x-regression.cjs && node visibility-regression.cjs && node retry-regression.cjs && node cache-regression.cjs"
+    "test": "node x-regression.cjs && node visibility-regression.cjs && node retry-regression.cjs && node cache-regression.cjs && node identity-regression.cjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"

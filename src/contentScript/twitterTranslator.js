@@ -115,6 +115,7 @@ var twitterTranslator = (function () {
         // snapshot, and cannot mistake our own changes for a React update.
         let incomplete = false;
         pieces.forEach((nodes, i) => nodes.forEach((node, j) => {
+          if (options.isProtected && options.isProtected(node)) return;
           const text = results && results[i] && results[i][j];
           if (typeof text !== "string" || !text.trim()) {
             incomplete = true;
