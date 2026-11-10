@@ -37,3 +37,22 @@ The recovery tests use a controlled Chromium clock, not native timer throttling.
 They do not establish the cause of a previously observed intermittent live-X
 translation failure. Valid responses that retain the original text and requests
 that never settle are outside this recovery mechanism.
+
+
+## Cached original-text validation on X
+
+`cache-regression.cjs` covers Google cache entries that contain the original
+paragraph while reporting a detected language different from the target. The
+check is opted into only by X Google HTML requests. It requires at least 80
+characters and eight letter-words of unchanged text. Both completed in-memory
+entries and persistent entries are checked; newly returned suspect originals
+are treated as failures before they can become cached successes.
+
+Unknown/target languages, short names, ordinary pages and valid translations
+retain existing behavior. The current two-retry budget and concurrency cap
+remain in effect. Tests include text split around a protected mention.
+
+The check is conservative, not proof that every unchanged result is invalid.
+It does not detect English paraphrases or entries with unknown source language.
+Clearing a live cache removed the evidence needed to establish the exact cause
+of that incident; controlled regressions cover the specific class above.

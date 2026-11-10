@@ -247,7 +247,8 @@ function backgroundTranslateHTML(
   targetLanguage,
   sourceArray2d,
   dontSortResults,
-  retryFailedTranslation = false
+  retryFailedTranslation = false,
+  validateOriginal = false
 ) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(
@@ -259,6 +260,7 @@ function backgroundTranslateHTML(
         sourceArray2d,
         dontSortResults,
         retryFailedTranslation,
+        validateOriginal,
       },
       (response) => {
         checkedLastError();
@@ -1262,7 +1264,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
           service, sourceLanguage, targetLanguage,
           sources.map((piece) => piece.map((text) =>
             filterKeywordsInText(text, dictionary, service)
-          )), unsorted, retryFailedTranslation
+          )), unsorted, retryFailedTranslation, service === "google"
         );
         if (translationGeneration !== fooCount || !Array.isArray(results)) return [];
         return Promise.all(sources.map((piece, i) => Promise.all(piece.map((text, j) => {

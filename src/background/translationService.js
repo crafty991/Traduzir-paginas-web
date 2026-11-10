@@ -536,6 +536,27 @@ const translationService = (function () {
       });
     }
 
+    // Only opted-in X/Google requests use this conservative check. Short
+    // names, unknown languages and text already in the target language may
+    // legitimately stay unchanged. Do not invalidate those cache entries.
+    isUntranslatedForeignText(original, translated, detectedLanguage, targetLanguage) {
+      if (this.serviceName !== "google") return false;
+      const language = (detectedLanguage || "").toLowerCase().split("-")[0];
+      const target = (targetLanguage || "").toLowerCase().split("-")[0];
+      if (!language || language === "und" || language === "auto" ||
+          !target || language === target) return false;
+      try {
+        const normalize = (html) => this.cbTransformResponse(html, false)
+          .join(" ").replace(/\s+/g, " ").trim();
+        const source = normalize(original);
+        if (source.length < 80 || (source.match(/\p{L}+/gu) || []).length < 8) return false;
+        return source === normalize(translated);
+      } catch (_) {
+        // Malformed responses follow the existing failure/recovery path.
+        return false;
+      }
+    }
+
     /**
      * Receives the `sourceArray2d` parameter and prepares the requests.
      * Calls `cbTransformRequest` for each `sourceArray` of `sourceArray2d`.
@@ -550,7 +571,7 @@ const translationService = (function () {
      * @param {Array<string[]>} sourceArray2d
      * @returns {Promise<[Array<TranslationInfo[]>, TranslationInfo[]]>} `requests`, `currentTranslationsInProgress`
      */
-    async getRequests(sourceLanguage, targetLanguage, sourceArray2d, refresh = false) {
+    async getRequests(sourceLanguage, targetLanguage, sourceArray2d, refresh = false, validateOriginal = false) {
       /** @type {Array<TranslationInfo[]>} */
       const requests = [];
       /** @type {TranslationInfo[]} */
@@ -572,7 +593,10 @@ const translationService = (function () {
         const progressInfo = this.translationsInProgress.get(requestHash);
         // A bounded recovery must not replay a failed/incomplete cached result.
         // Keep sharing requests that are still in progress.
-        if (progressInfo && (!refresh || progressInfo.status === "translating")) {
+        const unchangedCache = validateOriginal && progressInfo?.status === "complete" &&
+          this.isUntranslatedForeignText(requestString, progressInfo.translatedText,
+            progressInfo.detectedLanguage, targetLanguage);
+        if (progressInfo && !unchangedCache && (!refresh || progressInfo.status === "translating")) {
           currentTranslationsInProgress.push(progressInfo);
         } else {
           /** @type {TranslationStatus} */
@@ -605,7 +629,8 @@ const translationService = (function () {
             targetLanguage,
             requestString,
           );
-          if (cacheEntry) {
+          if (cacheEntry && !(validateOriginal && this.isUntranslatedForeignText(
+              requestString, cacheEntry.translatedText, cacheEntry.detectedLanguage, targetLanguage))) {
             progressInfo.translatedText = cacheEntry.translatedText;
             progressInfo.detectedLanguage = cacheEntry.detectedLanguage;
             progressInfo.status = "complete";
@@ -702,12 +727,14 @@ const translationService = (function () {
       dontSaveInPersistentCache = false,
       dontSortResults = false,
       retryFailedTranslation = false,
+      validateOriginal = false,
     ) {
       const [requests, currentTranslationsInProgress] = await this.getRequests(
         sourceLanguage,
         targetLanguage,
         sourceArray2d,
         retryFailedTranslation,
+        validateOriginal,
       );
       /** @type {Promise<void>[]} */
       const promises = [];
@@ -722,6 +749,14 @@ const translationService = (function () {
                 this.cbTransformResponse(result.text, dontSortResults); // apenas para gerar error
                 const transInfo = request[idx];
                 transInfo.detectedLanguage = result.detectedLanguage || "und";
+                if (validateOriginal && this.isUntranslatedForeignText(
+                    transInfo.originalText, result.text, transInfo.detectedLanguage, targetLanguage)) {
+                  // Do not promote an unchanged foreign paragraph to a cached
+                  // success. The content script's existing retry budget applies.
+                  transInfo.translatedText = null;
+                  transInfo.status = "error";
+                  continue;
+                }
                 transInfo.translatedText = result.text;
                 transInfo.status = "complete";
 
@@ -1003,6 +1038,7 @@ const translationService = (function () {
       dontSaveInPersistentCache,
       dontSortResults = false,
       retryFailedTranslation = false,
+      validateOriginal = false,
     ) {
       /** @type {{search: string, replace: string}[]} */
       const replacements = [
@@ -1034,6 +1070,7 @@ const translationService = (function () {
         dontSaveInPersistentCache,
         dontSortResults,
         retryFailedTranslation,
+        validateOriginal,
       );
     }
   })();
@@ -1586,6 +1623,7 @@ const translationService = (function () {
     dontSaveInPersistentCache = false,
     dontSortResults = false,
     retryFailedTranslation = false,
+    validateOriginal = false,
   ) => {
     serviceName = twpLang.getAlternativeService(
       targetLanguage,
@@ -1600,6 +1638,7 @@ const translationService = (function () {
       dontSaveInPersistentCache,
       dontSortResults,
       retryFailedTranslation,
+      validateOriginal,
     );
   };
 
@@ -1668,6 +1707,7 @@ const translationService = (function () {
           dontSaveInPersistentCache,
           request.dontSortResults,
           request.retryFailedTranslation === true,
+          request.validateOriginal === true,
         )
         .then((results) => sendResponse(results))
         .catch((e) => {

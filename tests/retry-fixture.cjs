@@ -23,7 +23,7 @@ async function fixture(browser, { variant = 'patched', mode = 'success', clock =
     window.mode=mode;window.network=[];window.messages=[];window.pending=[];window.disk=new Map();window.attempts=new Map();
     window.cacheReads=0;window.cacheWrites=0;window.stats={};
     const key=(...a)=>JSON.stringify(a);
-    window.translationCache={async get(...a){cacheReads++;const entry=disk.get(key(...a));if(entry)return entry;if(window.mode==='badDisk'&&a[3].includes('Recover'))return {translatedText:'<pre><a i=0>Cached partial translation</a></pre>',detectedLanguage:'en'};return null;},set(...a){cacheWrites++;disk.set(key(...a.slice(0,4)),{translatedText:a[4],detectedLanguage:a[5]});}};
+    window.translationCache={async get(...a){cacheReads++;const entry=disk.get(key(...a));if(entry)return entry;if(window.mode==='cachedOriginal'&&a[3].includes('Recover'))return {translatedText:a[3],detectedLanguage:window.detected||'en'};if(window.mode==='badDisk'&&a[3].includes('Recover'))return {translatedText:'<pre><a i=0>Cached partial translation</a></pre>',detectedLanguage:'en'};return null;},set(...a){cacheWrites++;disk.set(key(...a.slice(0,4)),{translatedText:a[4],detectedLanguage:a[5]});}};
     const affected=s=>s.includes('Recover')&&(!onlyFirst||s.includes('Recover 0 '));
     const translated=html=>html.includes('<a i=') ? html.replace(/(<a i=\d+>)([\s\S]*?)(<\/a>)/g,(_,a,t,b)=>`${a}IT(${t})${b}`) : html.replace(/<pre>([\s\S]*)<\/pre>/,(_,t)=>`<pre>IT(${t})</pre>`);
     window.XMLHttpRequestShim=class {
@@ -39,13 +39,14 @@ async function fixture(browser, { variant = 'patched', mode = 'success', clock =
           if(failing){this.onerror(new Error('controlled transport failure'));return;}
           this.response=[source.map((s,i)=>{
             if(affected(s)&&perPiece[i]===1){
+              if(window.mode==='originalOnce')return s;
               if(window.mode==='emptyOnce')return '';
               if(window.mode==='whitespaceOnce')return '<pre>   </pre>';
               if(window.mode==='partialOnce')return '<pre><a i=0>IT(Recover 0 first sentence.)</a></pre>';
               if(window.mode==='malformedOnce')return null;
             }
             return window.mode==='unchanged'?s:translated(s);
-          }),source.map(()=> 'en')];
+          }),source.map(()=> window.detected||'en')];
           this.onload();
         };
         if(relevant&&window.mode==='pending')pending.push(done);else queueMicrotask(done);
