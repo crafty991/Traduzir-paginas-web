@@ -511,6 +511,10 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
     }
     piecesToTranslate.forEach((piece) => {
       if (piece.obsolete) return;
+      if (piece.retrySource && !piece.retrySource.every(({ node, text }) => node.isConnected && node.textContent === text)) {
+        piece.obsolete = true;
+        return;
+      }
       if (piece.pendingSource) {
         if (!piece.pendingSource.every(({ node, text }) => node.isConnected && node.textContent === text)) {
           piece.obsolete = true;
@@ -1021,6 +1025,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
   }
 
   function translateResults(piecesToTranslateNow, results) {
+    const translationGeneration = fooCount;
     if (dontSortResults) {
       for (let i = 0; i < results.length; i++) {
         for (let j = 0; j < results[i].length; j++) {
@@ -1056,6 +1061,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
             nodesToRestore.push(toRestore);
 
             const originalText = originalTextNode.textContent;
+            const expectedText = nodes[j].textContent;
             handleCustomWords(
               translated,
               nodes[j].textContent,
@@ -1067,7 +1073,9 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
               // results = `${originalText.match(/^\s*/)[0]}${results.trim()}${
               //   originalText.match(/\s*$/)[0]
               // }`;
-              if (!isProtectedIdentityText(nodes[j])) {
+              if (pageLanguageState === "translated" && fooCount === translationGeneration &&
+                  nodes[j].isConnected && nodes[j].textContent === expectedText &&
+                  !isProtectedIdentityText(nodes[j])) {
                 translateTextContent(nodes[j], parentNode, results, toRestore);
               }
             });
@@ -1099,6 +1107,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
             nodesToRestore.push(toRestore);
 
             const originalText = originalTextNode.textContent;
+            const expectedText = nodes[j].textContent;
             handleCustomWords(
               translated,
               nodes[j].textContent,
@@ -1110,7 +1119,9 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
               // results = `${originalText.match(/^\s*/)[0]}${results.trim()}${
               //   originalText.match(/\s*$/)[0]
               // }`;
-              if (!isProtectedIdentityText(nodes[j])) {
+              if (pageLanguageState === "translated" && fooCount === translationGeneration &&
+                  nodes[j].isConnected && nodes[j].textContent === expectedText &&
+                  !isProtectedIdentityText(nodes[j])) {
                 translateTextContent(nodes[j], parentNode, results, toRestore);
               }
             });
@@ -1129,125 +1140,127 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
     }
   }
 
+  // Shared by ordinary page blocks and the existing X helper. Initial
+  // requests keep their current batching; only recovery occupies these slots.
+  let googleRecoveriesInFlight = 0;
+  function acquireGoogleRecovery() {
+    if (googleRecoveriesInFlight >= 2) return null;
+    googleRecoveriesInFlight++;
+    let released = false;
+    return () => {
+      if (!released) {
+        released = true;
+        googleRecoveriesInFlight--;
+      }
+    };
+  }
+
   function translationRoutine() {
     try {
       if (piecesToTranslate && pageIsVisible) {
         (function () {
           if (piecesToTranslate.length < 1) return;
           const innerHeight = window.innerHeight;
-
+          const isGoogle = currentPageTranslatorService === "google";
           function isInScreen(element) {
+            if (!element) return false;
             const rect = element.getBoundingClientRect();
-            if (
-              (rect.top > 0 && rect.top <= innerHeight) ||
-              (rect.bottom > 0 && rect.bottom <= innerHeight)
-            ) {
-              return true;
-            }
-            return false;
+            return rect.bottom > 0 && rect.top < innerHeight;
           }
-
-          function topIsInScreen(element) {
-            if (!element) {
-              // debugger;
-              return false;
-            }
-            const rect = element.getBoundingClientRect();
-            if (rect.top > 0 && rect.top <= innerHeight) {
-              return true;
-            }
-            return false;
+          function snapshotMatches(snapshot) {
+            return snapshot && snapshot.every(({ node, text }) =>
+              node.isConnected && node.textContent === text);
           }
-
-          function bottomIsInScreen(element) {
-            if (!element) {
-              // debugger;
-              return false;
-            }
-            const rect = element.getBoundingClientRect();
-            if (rect.bottom > 0 && rect.bottom <= innerHeight) {
-              return true;
-            }
-            return false;
-          }
-
           const currentFooCount = fooCount;
-
-          const piecesToTranslateNow = [];
-          piecesToTranslate.forEach((ptt) => {
-            if (!ptt.isTranslated && !ptt.obsolete) {
-              if (
-                bottomIsInScreen(ptt.topElement) ||
-                topIsInScreen(ptt.bottomElement)
-              ) {
-                ptt.isTranslated = true;
-                ptt.pendingSource = ptt.nodes.map((node) => ({ node, text: node.textContent }));
-                piecesToTranslateNow.push(ptt);
-              }
+          const initial = [];
+          const recoveries = [];
+          piecesToTranslate.forEach((piece) => {
+            if (piece.isTranslated || piece.pendingSource || piece.obsolete || piece.failed) return;
+            if (piece.retrySource && !snapshotMatches(piece.retrySource)) {
+              piece.obsolete = true;
+              return;
             }
+            if (piece.retryAt > Date.now()) return;
+            if (!isInScreen(piece.topElement) && !isInScreen(piece.bottomElement)) return;
+            const retrying = (piece.attempts || 0) > 0;
+            const release = retrying && isGoogle ? acquireGoogleRecovery() : null;
+            if (retrying && isGoogle && !release) return;
+            piece.pendingSource = piece.nodes.map((node) => ({ node, text: node.textContent }));
+            piece.attempts = (piece.attempts || 0) + 1;
+            if (retrying) recoveries.push({ piece, release });
+            else initial.push(piece);
           });
+
+          async function requestPieces(pieces, retrying = false, release = null) {
+            try {
+              let results;
+              try {
+                results = await backgroundTranslateHTML(
+                  currentPageTranslatorService, currentSourceLanguage, currentTargetLanguage,
+                  pieces.map((piece) => {
+                    // Keep dictionary markers/cache keys stable across retries
+                    // of this exact source revision.
+                    if (!piece.preparedSource) piece.preparedSource = piece.pendingSource.map(({ text }) =>
+                      filterKeywordsInText(text, customDictionary, currentPageTranslatorService));
+                    return piece.preparedSource;
+                  }),
+                  dontSortResults, retrying && isGoogle, isGoogle
+                );
+              } catch (_) {
+                results = null;
+              }
+              if (pageLanguageState !== "translated" || currentFooCount !== fooCount) return;
+              const validPieces = [];
+              const validResults = [];
+              pieces.forEach((piece, i) => {
+                const snapshot = piece.pendingSource;
+                piece.pendingSource = null;
+                if (piece.obsolete || !snapshotMatches(snapshot)) {
+                  piece.obsolete = true;
+                  return;
+                }
+                const row = results && results[i];
+                const usable = Array.isArray(row) && (!isGoogle || snapshot.every(({ node, text }, j) =>
+                  !text.trim() || isProtectedIdentityText(node) ||
+                  (typeof row[j] === "string" && row[j].trim())));
+                if (usable) {
+                  piece.isTranslated = true;
+                  piece.retrySource = null;
+                  validPieces.push(piece);
+                  validResults.push(row);
+                } else if (isGoogle && piece.attempts < 3 &&
+                    snapshot.some(({ node }) => !isProtectedIdentityText(node))) {
+                  piece.retrySource = snapshot;
+                  piece.retryAt = Date.now() + (piece.attempts === 1 ? 1500 : 4000);
+                } else {
+                  // Keep exhausted work known to tab-return reconciliation so
+                  // switching tabs cannot reset the per-revision retry budget.
+                  piece.failed = true;
+                  piece.retrySource = snapshot;
+                }
+              });
+              translateResults(validPieces, validResults);
+            } finally {
+              if (release) release();
+            }
+          }
+          if (initial.length) requestPieces(initial).catch(console.error);
+          recoveries.forEach(({ piece, release }) =>
+            requestPieces([piece], true, release).catch(console.error));
 
           const attributesToTranslateNow = [];
           attributesToTranslate.forEach((ati) => {
-            if (!ati.isTranslated) {
-              if (isInScreen(ati.node)) {
-                ati.isTranslated = true;
-                attributesToTranslateNow.push(ati);
-              }
+            if (!ati.isTranslated && isInScreen(ati.node)) {
+              ati.isTranslated = true;
+              attributesToTranslateNow.push(ati);
             }
           });
-
-          if (piecesToTranslateNow.length > 0) {
-            backgroundTranslateHTML(
-              currentPageTranslatorService,
-              currentSourceLanguage,
-              currentTargetLanguage,
-              piecesToTranslateNow.map((ptt) =>
-                ptt.nodes.map((node) =>
-                  filterKeywordsInText(
-                    node.textContent,
-                    customDictionary,
-                    currentPageTranslatorService
-                  )
-                )
-              ),
-              dontSortResults
-            ).then((results) => {
-              if (
-                pageLanguageState === "translated" &&
-                currentFooCount === fooCount
-              ) {
-                const validPieces = [];
-                const validResults = [];
-                piecesToTranslateNow.forEach((piece, i) => {
-                  const unchanged = !piece.obsolete && piece.pendingSource &&
-                    piece.pendingSource.every(({ node, text }) => node.isConnected && node.textContent === text);
-                  piece.pendingSource = null;
-                  if (unchanged && Array.isArray(results) && Array.isArray(results[i])) {
-                    validPieces.push(piece);
-                    validResults.push(results[i]);
-                  } else {
-                    // Do not overwrite a newer React/SPA version with an old
-                    // response. A return-to-tab rescan can collect it afresh.
-                    piece.obsolete = true;
-                  }
-                });
-                translateResults(validPieces, validResults);
-              }
-            });
-          }
-
           if (attributesToTranslateNow.length > 0) {
             backgroundTranslateText(
-              currentPageTranslatorService,
-              currentSourceLanguage,
-              currentTargetLanguage,
+              currentPageTranslatorService, currentSourceLanguage, currentTargetLanguage,
               attributesToTranslateNow.map((ati) => ati.original)
             ).then((results) => {
-              if (
-                pageLanguageState === "translated" &&
-                currentFooCount === fooCount
-              ) {
+              if (pageLanguageState === "translated" && currentFooCount === fooCount) {
                 translateAttributes(attributesToTranslateNow, results);
               }
             });
@@ -1257,7 +1270,6 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
     } catch (e) {
       console.error(e);
     }
-
     clearTimeout(translationRoutine_handler);
     translationRoutine_handler = setTimeout(translationRoutine, 300);
   }
@@ -1349,6 +1361,7 @@ Promise.all([twpConfig.onReady(), getTabHostName()]).then(function (_) {
     twitterTranslator.start({
       isProtected: isProtectedIdentityText,
       retryFailed: currentPageTranslatorService === "google",
+      acquireRecovery: acquireGoogleRecovery,
       dynamic: twpConfig.get("translateDynamicallyCreatedContent") === "yes",
       getPieces(post) {
         if (post.closest('.notranslate, [translate="no"], [contenteditable="true"]')) return [];

@@ -48,15 +48,17 @@ const original = 'Recover Today we’re launching Gemini 4 Carbon, joining Argon
       ['already target-language text',{detected:'it'}],
       ['unknown detected language',{detected:'und'}],
       ['short product names',{text:'Recover Gemini 4 Carbon'}],
-      ['non-X pages',{host:'example.com'}],
     ]) await test(`${name}: unchanged responses do not trigger recovery`,async()=>{
       const f=await start({mode:'unchanged',...options});await advance(f.page,15000);
       assert.equal((await stats(f.page)).network,1);assert.equal((await stats(f.page)).refresh,0);await close(f);
     });
+    await test('ordinary non-X pages now receive the same bounded Google recovery',async()=>{
+      const f=await start({mode:'unchanged',host:'example.com'});await advance(f.page,20000);assert.equal((await stats(f.page)).network,3);assert.equal((await stats(f.page)).text,original);await close(f);
+    });
     await test('completed in-memory original result is also bypassed',async()=>{
       const f=await fixture(browser,{mode:'unchanged'});
       await f.page.evaluate(({original})=>{first0.textContent=original;window.detected='en';},{original});
-      await f.page.evaluate(()=>backgroundTranslateHTML('google','auto','it',[[first0.textContent,tail0.textContent]],false));
+      await f.page.evaluate(()=>{tail0.textContent='';return translationService.translateText('google','auto','it',[first0.textContent]);});
       await settle(f.page);assert.equal((await stats(f.page)).network,1);
       await f.page.evaluate(()=>{mode='success';pageTranslator.translatePage('it');});await settle(f.page);
       assert.equal((await stats(f.page)).network,2);assert.equal((await stats(f.page)).text,`IT(${original}) `);await close(f);

@@ -1,5 +1,39 @@
 # Content-script regression tests
 
+## General Google HTML recovery
+
+Run the self-contained checks with `npm --prefix tests run test:google` (Node
+only). They execute the production Google adapter and exact extracted page
+routines, the production X helper, and the real XMLHttpRequestShim with
+controlled transport/cache/timer/node contracts. They cover ordinary page
+recovery on GitHub/Reddit/other hostnames, malformed/partial/empty/unchanged
+results, old cache entries, exhausted budgets, shared X recovery slots, stale
+responses, custom dictionary markers, service changes, restoration and deadlines
+including response bodies stalled after headers. These are not browser, layout,
+MutationObserver or live-provider tests and contain no performance measurements.
+
+The ordinary Google HTML path now validates usable indexed results before
+accepting or caching them. An unchanged foreign paragraph is still considered
+suspect only for known source/target languages that differ, at least 80
+characters and eight letter-words. Failed page pieces have at most three total
+attempts per source revision, delayed by at least 1.5 then 4 seconds. Recovery
+shares two in-flight slots per document with X, respects visibility/viewport,
+uses the existing 300 ms routine, and does not reset its budget on tab return.
+The two-second ordinary dynamic-content collection interval is unchanged.
+
+Google HTTP requests and authentication discovery have 30-second deadlines;
+request abort precedes a later recovery. The shim dispatches error when body
+parsing fails instead of leaving its promise rejection unhandled. HTTP failure
+handling is otherwise shared by its existing consumers. Dictionary placeholders
+remain stable across retries of one ordinary piece. Protection rules and the
+reverted Reddit title-specific helper are unchanged.
+
+`npm --prefix tests run test:browser` runs the existing Chromium DOM suite and
+requires Playwright/Chromium. Some expectations were updated for the newly
+general cache validation; this suite has not been rerun for this revision in the
+current restricted execution environment. Earlier browser test counts must not
+be represented as checks of the new revision. `npm test` runs both suites.
+
 The tests execute the production content scripts in Chromium, with deterministic extension APIs and translation responses. They cover tab-return recovery, bounded language detection, manual-restore preferences, X post expansion, text-node identity, original-text restoration, protected link labels, stale responses, dynamic-content preferences and viewport changes.
 
 From the repository root:
@@ -43,13 +77,13 @@ that never settle are outside this recovery mechanism.
 
 `cache-regression.cjs` covers Google cache entries that contain the original
 paragraph while reporting a detected language different from the target. The
-check is opted into only by X Google HTML requests. It requires at least 80
+check now applies to the common Google HTML path, including ordinary pages. It requires at least 80
 characters and eight letter-words of unchanged text. Both completed in-memory
 entries and persistent entries are checked; newly returned suspect originals
 are treated as failures before they can become cached successes.
 
-Unknown/target languages, short names, ordinary pages and valid translations
-retain existing behavior. The current two-retry budget and concurrency cap
+Unknown/target languages, short names and valid translations retain existing behavior; ordinary pages
+now receive bounded recovery as well. The current two-retry budget and concurrency cap
 remain in effect. Tests include text split around a protected mention.
 
 The check is conservative, not proof that every unchanged result is invalid.

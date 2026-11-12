@@ -89,10 +89,21 @@ var twitterTranslator = (function () {
     const currentGeneration = generation;
     let retriesInFlight = 0;
 
-    async function translate(post, state) {
-      const pieces = options.getPieces(post).map((piece) => piece.nodes);
-      if (!pieces.length) return;
-      const sources = pieces.map((nodes) => nodes.map(sourceFor));
+    async function translate(post, state, release = null) {
+      let pieces;
+      let sources;
+      try {
+        pieces = options.getPieces(post).map((piece) => piece.nodes);
+        sources = pieces.map((nodes) => nodes.map(sourceFor));
+      } catch (error) {
+        if (release) release();
+        console.error("TWP: could not collect an X post", error);
+        return;
+      }
+      if (!pieces.length) {
+        if (release) release();
+        return;
+      }
       const retrying = state.attempts > 0;
       if (retrying) retriesInFlight++;
       state.attempts++;
@@ -135,6 +146,7 @@ var twitterTranslator = (function () {
         console.error("TWP: could not translate an X post", error);
       } finally {
         if (retrying) retriesInFlight--;
+        if (release) release();
       }
     }
 
@@ -154,8 +166,11 @@ var twitterTranslator = (function () {
         // Include posts taller than the viewport, common after Show more.
         if (rect.height <= 0 || rect.width <= 0 || rect.bottom <= 0 ||
             rect.top >= window.innerHeight) return;
+        const release = state.attempts > 0 && options.acquireRecovery
+          ? options.acquireRecovery() : null;
+        if (state.attempts > 0 && options.acquireRecovery && !release) return;
         dirty.delete(post);
-        translate(post, state);
+        translate(post, state, release);
       });
     }
 

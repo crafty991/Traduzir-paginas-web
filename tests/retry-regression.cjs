@@ -13,11 +13,11 @@ const {fixture,settle,advance,stats}=require('./retry-fixture.cjs');
   });
   for(const mode of ['failOnce','failTwice','emptyOnce','whitespaceOnce','partialOnce','malformedOnce','badDisk']){
    await test(`${mode}: production Google adapter, targeted cache refresh and recovery`,async()=>{
-    const f=await start({mode});const initial=await stats(f.page);assert.ok(!initial.tail.startsWith('IT('));
+    const f=await start({mode});const initial=await stats(f.page);if(mode==='badDisk')assert.ok(initial.tail.startsWith('IT('));else assert.ok(!initial.tail.startsWith('IT('));
     await advance(f.page,1200);assert.equal((await stats(f.page)).network,initial.network);
     await advance(f.page,900);if(mode==='failTwice')await advance(f.page,4500);
     const s=await stats(f.page);assert.equal(s.text,'IT(Recover 0 first sentence.) ');assert.equal(s.tail,'IT( Recover 0 second sentence.) ');
-    assert.equal(s.network,mode==='badDisk'?1:mode==='failTwice'?3:2);assert.ok(s.refresh>=1);assert.ok(s.times.length<2||s.times[1]-s.times[0]>=1500);
+    assert.equal(s.network,mode==='badDisk'?1:mode==='failTwice'?3:2);assert.ok(mode==='badDisk'?s.refresh===0:s.refresh>=1);assert.ok(s.times.length<2||s.times[1]-s.times[0]>=1500);
     const count=s.network;await advance(f.page,10000);assert.equal((await stats(f.page)).network,count);
     assert.equal(await f.page.locator('a').textContent(),'example.org/0');
     await f.page.evaluate(()=>pageTranslator.restorePage());assert.equal((await stats(f.page)).text,'Recover 0 first sentence.');await close(f);
